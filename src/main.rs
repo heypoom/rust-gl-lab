@@ -1,9 +1,10 @@
 extern crate image;
 
+use std::f32::consts::FRAC_PI_3;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 
-use glium::{Display, implement_vertex, index, IndexBuffer, Program, Surface, texture, uniform, VertexBuffer};
+use glium::{Depth, DepthTest, Display, DrawParameters, implement_vertex, IndexBuffer, Program, Surface, texture, uniform, VertexBuffer};
 use glium::glutin::ContextBuilder;
 use glium::index::PrimitiveType;
 use glium::texture::RawImage2d;
@@ -33,10 +34,27 @@ fn into_tex(bytes: &[u8], display: &Display) -> texture::SrgbTexture2d {
     texture::SrgbTexture2d::new(display, img).unwrap()
 }
 
+fn perspective_matrix((width, height): (u32, u32)) -> [[f32; 4]; 4] {
+    let aspect_ratio = height as f32 / width as f32;
+
+    let fov: f32 = FRAC_PI_3;
+    let z_far = 1024.0;
+    let z_near = 0.1;
+
+    let f = 1.0 / (fov / 2.0).tan();
+
+    [
+        [f * aspect_ratio, 0.0, 0.0, 0.0],
+        [0.0, f, 0.0, 0.0],
+        [0.0, 0.0, (z_far + z_near) / (z_far - z_near), 1.0],
+        [0.0, 0.0, -(2.0 * z_far * z_near) / (z_far - z_near), 0.0],
+    ]
+}
+
 fn main() {
     let event_loop = EventLoop::new();
     let window_builder = WindowBuilder::new();
-    let context_builder = ContextBuilder::new();
+    let context_builder = ContextBuilder::new().with_depth_buffer(24);
 
     let display = Display::new(window_builder, context_builder, &event_loop).unwrap();
     let display_window_id = display.gl_window().window().id();
@@ -47,25 +65,20 @@ fn main() {
     let normals = VertexBuffer::new(&display, &teapot::NORMALS).unwrap();
     let indices = IndexBuffer::new(&display, PrimitiveType::TrianglesList, &teapot::INDICES).unwrap();
 
-    // let shape = vec![
-    //     Vertex { position: [-0.5, -0.5], tex_coords: [0., 1.] },
-    //     Vertex { position: [0.0, 0.5], tex_coords: [0., 1.] },
-    //     Vertex { position: [0.5, -0.25], tex_coords: [1., 0.] },
-    // ];
-    //
-    // let vertex_buffer = VertexBuffer::new(&display, &shape).unwrap();
-    // let indices = index::NoIndices(index::PrimitiveType::TrianglesList);
-
     let vertex_shader_src = r#"
-        #version 140
+        #version 150
 
         in vec3 position;
         in vec3 normal;
 
+        out vec3 v_normal;
+
+        uniform mat4 perspective;
         uniform mat4 matrix;
 
         void main() {
-            gl_Position = matrix * vec4(position, 1.0);
+            v_normal = transpose(inverse(mat3(matrix))) * normal;
+            gl_Position = perspective * matrix * vec4(position, 1.0);
         }
     "#;
 
@@ -73,10 +86,16 @@ fn main() {
     let fragment_shader_src = r#"
         #version 140
 
+        in vec3 v_normal;
         out vec4 color;
 
+        uniform vec3 u_light;
+
         void main() {
-            color = vec4(0.73, 0.86, 0.35, 1.0);
+            float brightness = dot(normalize(v_normal), normalize(u_light));
+            vec3 dark_color = vec3(0.6, 0.0, 0.0);
+            vec3 regular_color = vec3(1.0, 0.0, 0.0);
+            color = vec4(mix(dark_color, regular_color, brightness), 1.0);
         }
     "#;
 
@@ -91,18 +110,33 @@ fn main() {
 
     event_loop.run(move |event, _, control_flow| {
         let mut target = display.draw();
+        let perspective = perspective_matrix(target.get_dimensions());
 
-        target.clear_color(0.42, 0.69, 0.3, 1.0);
+        target.clear_color_and_depth((0.42, 0.69, 0.3, 1.0), 1.0);
 
         let matrix = [
             [0.01, 0.0, 0.0, 0.0],
             [0.0, 0.01, 0.0, 0.0],
             [0.0, 0.0, 0.01, 0.0],
-            [0.0, 0.0, 0.0, 1.0f32]
+            [0.0, 0.0, 2.0, 1.0f32]
         ];
 
-        target.draw((&positions, &normals), &indices, &program, &uniform! { matrix: matrix },
-                    &Default::default()).unwrap();
+        let uniforms = uniform! {
+            matrix: matrix,
+            u_light: [-1.0, 0.4, 0.9f32],
+            perspective: perspective
+        };
+
+        let params = DrawParameters {
+            depth: Depth {
+                test: DepthTest::IfLess,
+                write: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        target.draw((&positions, &normals), &indices, &program, &uniforms, &params).unwrap();
 
         target.finish().unwrap();
 
