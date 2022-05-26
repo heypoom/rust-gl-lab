@@ -1,0 +1,9 @@
+[package]
+name = "rust-gl-lab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glium = "0.31.0"
+image = "0.24.2"
+winit = "0.26.1"
